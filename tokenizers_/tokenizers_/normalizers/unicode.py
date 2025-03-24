@@ -1,32 +1,48 @@
 import unicodedata
 from typing import List, Tuple
-from tokenizers_.tokenizers.normalizers import NormalizedString
-
-
-class Normalizer:
-    def normalize(self, normalized_str: NormalizedString) -> None:
-        raise NotImplementedError
+from tokenizers_.tokenizer import NormalizedString
+from tokenizers_.normalizers.base import Normalizer
 
 
 # Unicode 规范化实现 --------------------------------------------------------
 class NFD(Normalizer):
-    def normalize(self, nstr: NormalizedString) -> None:
+    def normalize(self, normalized: NormalizedString) -> None:
+        normalized.nfd()
+
+    def normalize_str(self, sequence: str) -> None:
+        nstr = NormalizedString(sequence)
         nstr.nfd()
+        return nstr.get()
 
 
 class NFKD(Normalizer):
-    def normalize(self, nstr: NormalizedString) -> None:
+    def normalize(self, normalized: NormalizedString) -> None:
+        normalized.nfkd()
+
+    def normalize_str(self, sequence: str) -> None:
+        nstr = NormalizedString(sequence)
         nstr.nfkd()
+        return nstr.get()
 
 
 class NFC(Normalizer):
-    def normalize(self, nstr: NormalizedString) -> None:
+    def normalize(self, normalized: NormalizedString) -> None:
+        normalized.nfc()
+
+    def normalize_str(self, sequence: str) -> None:
+        nstr = NormalizedString(sequence)
         nstr.nfc()
+        return nstr.get()
 
 
 class NFKC(Normalizer):
-    def normalize(self, nstr: NormalizedString) -> None:
+    def normalize(self, normalized: NormalizedString) -> None:
+        normalized.nfkc()
+
+    def normalize_str(self, sequence: str) -> None:
+        nstr = NormalizedString(sequence)
         nstr.nfkc()
+        return nstr.get()
 
 
 # NMT 规范化实现 ----------------------------------------------------------
@@ -59,8 +75,13 @@ def do_nmt(text: str) -> str:
 
 
 class Nmt(Normalizer):
-    def normalize(self, nstr: NormalizedString) -> None:
-        nstr.normalized = do_nmt(nstr.normalized)
+    def normalize(self, normalized: NormalizedString) -> None:
+        normalized.normalized = do_nmt(normalized.normalized)
+
+    def normalize_str(self, sequence: str) -> None:
+        nstr = NormalizedString(sequence)
+        nstr.nfkd()
+        return nstr.get()
 
 
 # 测试用例 ----------------------------------------------------------------
@@ -75,4 +96,8 @@ if __name__ == "__main__":
     nstr = NormalizedString(text)
     Nmt().normalize(nstr)
     print(f"Nmt: {nstr.normalized!r}") # 输出: 'Hello world '
+
+    nstr = NormalizedString("Héllò hôw are ü?")
+    NFD().normalize(nstr)
+    print(f"{nstr.normalized}")
 

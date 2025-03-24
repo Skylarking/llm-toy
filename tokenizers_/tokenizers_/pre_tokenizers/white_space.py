@@ -28,11 +28,7 @@ class Whitespace(PreTokenizer):
                 The pre-tokenized string on which to apply this
                 :class:`~tokenizers.pre_tokenizers.PreTokenizer`
         """
-        tokens = []
-        for match in self.re.finditer(pretok):
-            start, end = match.span()
-            tokens.append((match.group(), (start, end)))
-        return tokens
+        pass
 
     def pre_tokenize_str(self, sequence):
         """
