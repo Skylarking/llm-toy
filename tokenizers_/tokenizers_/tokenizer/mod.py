@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from typing import List, Optional, Dict, Tuple, Iterable, Iterator
+
+Offsets = Tuple[int, int]
 
 @dataclass(frozen=True, order=True)
 class Token:

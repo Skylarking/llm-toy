@@ -1,6 +1,6 @@
 from typing import List, Tuple
-from tokenizers_.tokenizer import NormalizedString
-from tokenizers_.normalizers.base import Normalizer
+from ..tokenizer import NormalizedString
+from .base import Normalizer
 import unicodedata
 class Strip(Normalizer):
     strip_left: bool

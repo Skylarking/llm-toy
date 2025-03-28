@@ -1,12 +1,14 @@
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Union, Optional, List, Tuple, Iterable, Any, TypeVar, Callable
+from typing import Union, Optional, List, Tuple, Iterable, Any, TypeVar, Callable, Pattern as RePattern
 from unicodedata import normalize
 import re
 from difflib import SequenceMatcher
+from pattern import Pattern, CharPattern, RegexPattern, StrPattern, Invert, FunctionPattern, pattern
+from mod import Offsets
 
 # 范型注解，用于Range中bounds，可以有多种类型
-T = TypeVar('T')
+Bounds = TypeVar("Bounds", range, slice, tuple)
 
 
 class OffsetReferential(Enum):
@@ -124,6 +126,12 @@ class NormalizedString:
     def get_original(self) -> str:
         return self.original
 
+    def offsets_original(self) -> Offsets:
+        return (
+            self.original_shift,
+            self.original_shift + self.len_original(),
+        )
+
     @classmethod
     def set(cls,
             sequence: str,
@@ -234,6 +242,8 @@ class NormalizedString:
     # endregion
 
     # region 字符串操作
+
+    # region slice操作，机器辅助函数
     def is_char_boundary(self, index: int) -> bool:
         """检查字节索引是否是字符的起始位置（仿照 Rust 的 is_char_boundary）"""
         if index == 0 or index == len(self.normalized.encode('utf-8')):
@@ -244,29 +254,6 @@ class NormalizedString:
             return True
         except UnicodeDecodeError:
             return False
-
-    def slice(self, rng: Range) -> Optional['NormalizedString']:
-        """安全切片（严格对齐字符边界）"""
-        converted = self.convert_offsets(rng)
-        if not converted:
-            return None
-
-        start, end = converted.start, converted.stop
-
-        # 严格检查字节边界（HF tokenizers 核心约束）
-        if not (self.is_char_boundary(start) and self.is_char_boundary(end)):
-            return None
-
-        # 提取子字符串和对齐信息
-        new_norm = self.normalized.encode('utf-8')[start:end].decode('utf-8')
-        new_align = self.alignments[start:end]
-
-        return NormalizedString.set(
-            self.original,
-            normalized=new_norm,
-            alignments=new_align,
-            original_shift=self.original_shift + self._get_original_start(start)
-        )
 
     def convert_offsets(self, rng: Range) -> Optional[range]:
         """符合 HF tokenizers 规范的偏移转换"""
@@ -321,6 +308,59 @@ class NormalizedString:
     def _get_original_start(self, norm_byte: int) -> int:
         """获取原始字符串的起始字节偏移"""
         return self.alignments[norm_byte][0] if self.alignments else 0
+
+    # def slice_(self, rng: Range) -> Optional['NormalizedString']:
+    #     """安全切片（严格对齐字符边界）"""
+    #     converted = self.convert_offsets(rng)
+    #     if not converted:
+    #         return None
+    #
+    #     start, end = converted.start, converted.stop
+    #
+    #     # 严格检查字节边界（HF tokenizers 核心约束）
+    #     if not (self.is_char_boundary(start) and self.is_char_boundary(end)):
+    #         return None
+    #
+    #     # 提取子字符串和对齐信息
+    #     new_norm = self.normalized.encode('utf-8')[start:end].decode('utf-8')
+    #     new_align = self.alignments[start:end]
+    #
+    #     return NormalizedString.set(
+    #         self.original,
+    #         normalized=new_norm,
+    #         alignments=new_align,
+    #         original_shift=self.original_shift + self._get_original_start(start)
+    #     )
+
+    def slice(self, rng: Range) -> Optional['NormalizedString']:
+        """根据Range类型执行切片"""
+        # 转换到规范化坐标系
+        if rng.referential == OffsetReferential.ORIGINAL:
+            # 需要先将原始坐标转换为规范化坐标
+            converted = self.convert_offsets(rng.bounds, referential=rng.referential)
+            if not converted:
+                return None
+            start, end = converted.start, converted.stop
+        else:
+            # 直接使用规范化坐标
+            start = rng.bounds.start if isinstance(rng.bounds, slice) else rng.bounds[0]
+            end = rng.bounds.stop if isinstance(rng.bounds, slice) else rng.bounds[-1]
+
+        # 执行边界检查
+        if not (self.is_char_boundary(start) and self.is_char_boundary(end)):
+            return None
+
+        # 执行实际切片操作
+        new_norm = self.normalized.encode('utf-8')[start:end].decode('utf-8')
+        new_align = self.alignments[start:end]
+
+        return NormalizedString.set(
+            self.original,
+            normalized=new_norm,
+            alignments=new_align,
+            original_shift=self.original_shift + self._get_original_start(start)
+        )
+    # endregion slice操作，机器辅助函数
 
     def filter(self, predicate: Callable[[str], bool]) -> 'NormalizedString':
         """过滤字符"""
@@ -455,82 +495,228 @@ class NormalizedString:
         self.original_shift = self.alignments[left][0] if left <= right else 0
         return self
 
-    # endregion
+    # region split操作，及其辅助函数
+    def split(self,
+             pattern: Pattern,
+             behavior: SplitDelimiterBehavior
+        ) -> List['NormalizedString']:
+        """实现支持多参考系的分割功能"""
+        # 获取所有匹配区间（始终基于规范化字符串）
+        # matches = self._find_matches(pattern)
+        matches = pattern.find_matches(self.get())
 
-    # region 辅助方法
-    # def convert_offsets(self, rng: Range) -> Optional[range]:
-    #     """
-    #     将原始字符串或规范化字符串的字节范围转换为规范化字符串的字节索引范围
-    #     Args:
-    #         rng (Range): 包含参考系（ORIGINAL/NORMALIZED）和范围（range/slice）
-    #     Returns:
-    #         Optional[range]: 规范化字符串的连续字节范围，无法转换时返回None
-    #     """
-    #
-    #     # 辅助函数：解析范围边界
-    #     def _resolve_bounds(bounds: Union[range, slice], total_length: int) -> Tuple[int, int]:
-    #         if isinstance(bounds, slice):
-    #             start = bounds.start if bounds.start is not None else 0
-    #             stop = bounds.stop if bounds.stop is not None else total_length
-    #             # 处理负数索引
-    #             start = max(0, start + total_length) if start < 0 else start
-    #             stop = max(0, stop + total_length) if stop < 0 else stop
-    #             return (max(0, min(start, total_length)), max(0, min(stop, total_length)))
-    #         elif isinstance(bounds, range):
-    #             if bounds.step != 1:
-    #                 raise ValueError("Only step=1 is supported for range bounds.")
-    #             start = max(0, min(bounds.start, total_length))
-    #             stop = max(0, min(bounds.stop, total_length))
-    #             return (start, stop)
-    #         else:
-    #             raise TypeError("Unsupported bounds type")
-    #
-    #     # 处理不同参考系
-    #     if rng.referential == OffsetReferential.ORIGINAL:
-    #         # 获取原始字符串的总字节数（预计算存储）
-    #         total_original_bytes = self.original_byte_length
-    #         # 解析原始范围边界
-    #         start, stop = _resolve_bounds(rng.bounds, total_original_bytes)
-    #         # 收集所有规范化字节索引（其原始范围完全在目标范围内）
-    #         matching_indices = [
-    #             i for i, (a_start, a_end) in enumerate(self.alignments)
-    #             if a_start >= start and a_end <= stop
-    #         ]
-    #         # 检查索引连续性
-    #         if not matching_indices:
-    #             return None
-    #         for i in range(1, len(matching_indices)):
-    #             if matching_indices[i] != matching_indices[i - 1] + 1:
-    #                 return None
-    #         return range(matching_indices[0], matching_indices[-1] + 1)
-    #
-    #     elif rng.referential == OffsetReferential.NORMALIZED:
-    #         # 获取规范化字符串的总字节数（即alignments长度）
-    #         total_norm_bytes = len(self.alignments)
-    #         # 解析规范化范围边界
-    #         start, stop = _resolve_bounds(rng.bounds, total_norm_bytes)
-    #         # 检查有效性
-    #         if start >= total_norm_bytes or stop > total_norm_bytes or start > stop:
-    #             return None
-    #         return range(start, stop)
-    #
-    #     else:
-    #         raise ValueError("Invalid referential type")
-    #
-    # def _get_original_start(self, norm_byte: int) -> int:
-    #     """根据规范化字节位置计算原始字符串的起始字节"""
-    #     return self.alignments[norm_byte][0] if self.alignments else 0
-    # endregion
+        # 处理分割模式生成规范化坐标区间
+        norm_ranges = self._process_matches(matches, behavior)
+
+        # 转换为Range对象并切片
+        return [
+            self.slice(Range.Normalized(slice(start, end)))
+            for (start, end) in norm_ranges
+            if (start < end) and self._is_valid_norm_range(start, end)
+        ]
+
+    def _process_matches(
+            self,
+            matches: List[Tuple[Offsets, bool]],
+            behavior: SplitDelimiterBehavior
+    ) -> List[Tuple[int, int]]:
+        """处理匹配区间生成分割范围"""
+
+        # 获取字符集别的range
+        char_ranges = []
+        for (byte_start, byte_end), is_match in matches:
+            # 获取对应的字符范围
+            if (char_range := bytes_to_char(self.normalized, range(byte_start, byte_end))):
+                char_ranges.append(((char_range.start, char_range.stop), is_match))
+
+        if behavior == SplitDelimiterBehavior.ISOLATED:
+            processed_char_ranges = self._isolated_ranges(char_ranges)
+        elif behavior == SplitDelimiterBehavior.REMOVED:
+            processed_char_ranges = self._removed_ranges(char_ranges)
+        elif behavior == SplitDelimiterBehavior.CONTIGUOUS:
+            processed_char_ranges = self._contiguous_ranges(char_ranges)
+        elif behavior == SplitDelimiterBehavior.MERGED_WITH_PREVIOUS:
+            processed_char_ranges = self._merged_previous_ranges(char_ranges)
+        elif behavior == SplitDelimiterBehavior.MERGED_WITH_NEXT:
+            processed_char_ranges = self._merged_next_ranges(char_ranges)
+        else:
+            raise NotImplementedError
+
+        # 转换回字节级range
+        return [
+            (char_to_bytes(self.normalized, range(start, end)).start,
+             char_to_bytes(self.normalized, range(start, end)).stop)
+            for start, end in processed_char_ranges
+        ]
+
+    def _is_valid_norm_range(self, start: int, end: int) -> bool:
+        """验证规范化坐标范围的有效性"""
+        return (0 <= start <= end <= len(self.normalized.encode('utf-8'))) and \
+            self.is_char_boundary(start) and \
+            self.is_char_boundary(end)
+
+    # 以下是不同分割行为的实现。字符级
+    def _isolated_ranges(self, matches):
+        """分隔符作为独立元素"""
+        ranges = []
+        prev_end = 0
+        for start, end in matches:
+            if start > prev_end:
+                ranges.append((prev_end, start))
+            ranges.append((start, end))
+            prev_end = end
+        if prev_end < len(self.normalized):
+            ranges.append((prev_end, len(self.normalized)))
+        return ranges
 
 
-    # region Helper Methods
+    def _removed_ranges(self, matches):
+        """删除分隔符"""
+        ranges = []
+        # 只保留非匹配区域（is_match=False）
+        for (start, end), is_match in matches:
+            if not is_match:
+                ranges.append((start, end))
+        return ranges
+
+    def _contiguous_ranges(self, matches):
+        """处理连续分隔符"""
+        merged = []
+        for start, end in matches:
+            if merged and start == merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
+            else:
+                merged.append((start, end))
+        return self._isolated_ranges(merged)
+
+    def _merged_previous_ranges(self, matches):
+        """分隔符合并到前段（修复多字节字符问题）"""
+        if not matches:
+            return [(0, len(self.normalized))]
+
+        # Step 1: Merge consecutive matches
+        merged = []
+        for start, end in matches:
+            if merged and start <= merged[-1][1]:
+                # Merge overlapping or adjacent matches
+                prev_start, prev_end = merged[-1]
+                merged[-1] = (prev_start, max(end, prev_end))
+            else:
+                merged.append((start, end))
+
+        # Step 2: Build ranges
+        ranges = []
+        prev_end = 0
+        for match_start, match_end in merged:
+            # Add content before match
+            if match_start > prev_end:
+                ranges.append((prev_end, match_start))
+
+            # Merge match with previous content
+            if ranges:
+                last_start, last_end = ranges[-1]
+                new_start = last_start
+                new_end = match_end
+                ranges[-1] = (new_start, new_end)
+            else:
+                ranges.append((0, match_end))  # Handle leading delimiters
+
+            prev_end = match_end
+
+        # Add remaining content
+        if prev_end < len(self.normalized):
+            ranges.append((prev_end, len(self.normalized)))
+
+        return ranges
+
+    def _merged_next_ranges(self, matches):
+        """分隔符合并到后段（修复多字节字符问题）"""
+        if not matches:
+            return [(0, len(self.normalized))]
+
+        # Reverse merge from right
+        merged = []
+        for start, end in reversed(matches):
+            if merged and end >= merged[-1][0]:
+                # Merge overlapping or adjacent matches
+                prev_start, prev_end = merged[-1]
+                merged[-1] = (min(start, prev_start), prev_end)
+            else:
+                merged.append((start, end))
+        merged.reverse()
+
+        # Build ranges
+        ranges = []
+        next_start = len(self.normalized)
+        for match_start, match_end in reversed(merged):
+            # Add content after match
+            if match_end < next_start:
+                ranges.insert(0, (match_end, next_start))
+
+            # Merge match with following content
+            if ranges:
+                first_start, first_end = ranges[0]
+                new_start = match_start
+                new_end = first_end
+                ranges[0] = (new_start, new_end)
+            else:
+                ranges.insert(0, (match_start, len(self.normalized)))  # Handle trailing delimiters
+
+            next_start = match_start
+
+        # Add remaining content
+        if next_start > 0:
+            ranges.insert(0, (0, next_start))
+
+        return ranges
+    # endregion split操作，及其辅助函数
+
+    # endregion 字符串操作
 
     def __len__(self) -> int:
         return len(self.normalized)
 
+    def len(self) -> int:
+        """返回字符数，不是字节数"""
+        return len(self.normalized)
+
     def len_original(self) -> int:
+        """返回字符数，不是字节数"""
         return len(self.original)
-    # endregion
+
+    def is_empty(self):
+        return len(self.normalized) == 0
+
+    def get_range(self, range: Range) -> Optional[str]:
+        """
+        根据范围类型获取规范化字符串的对应子串
+
+        参数:
+            range (Range): 需要获取的范围（基于ORIGINAL或NORMALIZED参考系）
+
+        返回:
+            Optional[str]: 对应子字符串（范围有效时），否则返回None
+        """
+        # 转换偏移量为规范化字符串的字节范围
+        converted = self.convert_offsets(range)
+
+        if not converted:
+            return None
+
+        # 统一处理不同参考系的字节范围
+        try:
+            if range.referential == OffsetReferential.ORIGINAL:
+                # 原始参考系需要检查对齐合法性
+                start, end = converted
+                if start < 0 or end > len(self.normalized.encode()):
+                    return None
+                return self.slice(start, end)
+            else:
+                # 规范化参考系直接切片
+                return self.normalized[converted[0]:converted[1]]
+        except (IndexError, ValueError):
+            return None
+
 
 
 # region Utility Functions
@@ -633,5 +819,51 @@ if __name__ == '__main__':
     print("+----------------- 大小写转换 ----------------+")
     ns = NormalizedString("straB").lowercase()
     print(f"str: {ns.get()}, alignment: {ns.alignments}")
+
+    # region slice
+    print("+----------------- slice REMOVED ----------------+")
+    ns = NormalizedString("the-final--countdown")
+    result = ns.split(pattern("-"), SplitDelimiterBehavior.REMOVED)
+    print([s.get() for s in result])    # ['the', 'final', 'countdown']
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))
+
+    print("+----------------- slice ISOLATED ----------------+")
+    ns = NormalizedString("the-final--countdown")
+    result = ns.split(pattern("-"), SplitDelimiterBehavior.ISOLATED)
+    print([s.get() for s in result])    # ['the', '-', 'final', '-', '-', 'countdown']
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))
+
+    # 测试 MERGED_WITH_PREVIOUS 行为
+    print("+----------------- slice MERGED_WITH_PREVIOUS ----------------+")
+    ns = NormalizedString("the-final--countdown")
+    result = ns.split(pattern("-"), SplitDelimiterBehavior.MERGED_WITH_PREVIOUS)
+    print([s.get() for s in result])    # ['the-', 'final-', '-', 'countdown']
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))
+
+    print("+----------------- slice MERGED_WITH_NEXT ----------------+")
+    ns = NormalizedString("the-final--countdown")
+    result = ns.split(pattern("-"), SplitDelimiterBehavior.MERGED_WITH_NEXT)
+    print([s.get() for s in result])     # ['the', '-final', '-', '-countdown']
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))
+
+    print("+----------------- slice CONTIGUOUS ----------------+")
+    ns = NormalizedString("the-final--countdown")
+    result = ns.split(pattern("-"), SplitDelimiterBehavior.CONTIGUOUS)
+    print([s.get() for s in result])    # ['the', '-', 'final', '--', 'countdown']
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))  # ['the', '-', 'final', '--', 'countdown']
+
+    # 测试中文场景
+    print("+----------------- slice 中文 ----------------+")
+    ns = NormalizedString("中- 文  -测试！") # \w 匹配所有 Unicode 字母、数字和下划线（_），不包含连字符-，[\w-]+包括连字符
+    p = Invert(pattern(re.compile(r'\w+|[^\w\s]+', flags=re.UNICODE))) # 测试不同的pattern：pattern("文"); pattern(lambda c: c == "测"); pattern(re.compile(r"\w+")); pattern(re.compile(r"[\w-]+", flags=re.UNICODE)); Invert(pattern(re.compile(r'\w+|[^\w\s]+', flags=re.UNICODE)))
+    result = ns.split(p, SplitDelimiterBehavior.REMOVED) # 更改SplitDelimiterBehavior， 进行测试
+    print([s.get() for s in result])
+    print('\n '.join([f"str: {s.get()}, alignment: {s.alignments}" for s in result]))
+    # endregion
+
+    print("+----------------- original_range ----------------+")
+    ns = NormalizedString("Hello_______ World!")
+    ns.filter(lambda c: c != '_').lowercase()
+    world_n = ns.get_range_of()
 
     pass

@@ -1,4 +1,4 @@
-from tokenizers_.tokenizer import NormalizedString
+from ..tokenizer import NormalizedString
 class Normalizer:
     """
     Base class for all normalizers

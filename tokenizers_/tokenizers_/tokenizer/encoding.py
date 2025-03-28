@@ -2,10 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple, Iterable, Iterator
 import copy
-from mod import Token
+from .mod import Token, Offsets
 
 # 类型别名
-Offsets = Tuple[int, int]
 PaddingDirection = str  # "left" 或 "right"
 TruncationDirection = str  # "left" 或 "right"
 
@@ -55,15 +54,16 @@ class Encoding:
         )
 
     @classmethod
-    def from_tokens(cls, tokens: List[Token], type_id: int) -> Encoding:
+    def from_tokens(cls, tokens: List[Token], type_id: int) -> 'Encoding':
+        """从Token列表构造Encoding对象"""
         return cls(
             ids=[t.id for t in tokens],
-            tokens=[t.value for t in tokens],
-            offsets=[t.offsets for t in tokens],
-            words=[None] * len(tokens),
             type_ids=[type_id] * len(tokens),
-            attention_mask=[1] * len(tokens),
-            special_tokens_mask=[0] * len(tokens)
+            tokens=[t.value for t in tokens],
+            words=[None] * len(tokens),
+            offsets=[t.offsets for t in tokens],
+            special_tokens_mask=[0] * len(tokens),
+            attention_mask=[1] * len(tokens)
         )
 
     # endregion

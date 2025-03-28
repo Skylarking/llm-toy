@@ -1,16 +1,19 @@
-from tokenizers_ import Tokenizer
-from tokenizers_.models import BPE
-tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
+# -------------------------------- normalizer ---------------------------------- #
 
-from tokenizers_.trainers import BpeTrainer
-trainer = BpeTrainer(special_tokens=["[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]"])
+from tokenizers_ import normalizers
+from tokenizers_.normalizers import NFD, StripAccents
+normalizer = normalizers.Sequence([NFD(), StripAccents()])
 
-from tokenizers_.pre_tokenizers import Whitespace
-tokenizer.pre_tokenizer = Whitespace()
+a = normalizer.normalize_str("Héllò hôw are ü?")
+# "Hello how are u?"
+print(a)
 
-files = [f"data/wikitext-103-raw/wiki.{split}.raw" for split in ["test", "train", "valid"]]
-tokenizer.train(files, trainer)
-
-tokenizer.save("data/tokenizer-wiki.json")
+# -------------------------------- pre tokenizer ---------------------------------- #
+from tokenizers.pre_tokenizers import Whitespace
+pre_tokenizer = Whitespace()
+pre_tokenizer.pre_tokenize_str("Hello! How are you? I'm fine, thank you.")
+# [("Hello", (0, 5)), ("!", (5, 6)), ("How", (7, 10)), ("are", (11, 14)), ("you", (15, 18)),
+#  ("?", (18, 19)), ("I", (20, 21)), ("'", (21, 22)), ('m', (22, 23)), ("fine", (24, 28)),
+#  (",", (28, 29)), ("thank", (30, 35)), ("you", (36, 39)), (".", (39, 40))]
 
 

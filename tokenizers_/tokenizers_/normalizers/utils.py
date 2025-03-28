@@ -1,6 +1,6 @@
 from typing import List, Tuple
-from tokenizers_.tokenizer.normalizer import NormalizedString
-from tokenizers_.normalizers.base import Normalizer
+from ..tokenizer.normalizer import NormalizedString
+from .base import Normalizer
 class Sequence(Normalizer):
     def __init__(self, normalizers: List[Normalizer]):
         self.normalizers = normalizers
